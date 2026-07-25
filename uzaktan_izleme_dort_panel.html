@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<!-- Sulama Izleme Sayfasi v7.2 - ESP1'e "Uzak Bahçe Kontrol" satırı eklendi; Ac/Kapat dugmeleri eklendi; normal sistem calisirken dugmeler gizlenir -->
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sulama Panoları - Uzaktan İzleme (4 Panel)</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/paho-mqtt/1.0.1/mqttws31.min.js"></script>
+<style>
+  body{font-family:Arial;background:#111;color:#eee;padding:20px;}
+  h2{text-align:center;margin-bottom:14px;}
+  /* Genis ekranda 2x2 yerlesim, dar ekranda (telefon) alt alta */
+  .izgara{display:grid;grid-template-columns:1fr 1fr;gap:20px;}
+  @media (max-width:900px){ .izgara{grid-template-columns:1fr;} }
+  .panel{background:#1b1b1b;border-radius:10px;padding:15px;}
+  table{width:100%;border-collapse:collapse;table-layout:fixed;}
+  td,th{padding:9px;border-bottom:1px solid #333;font-size:16px;vertical-align:top;word-wrap:break-word;}
+  /* Sabit sutun genislikleri - kelime degisince satirlar kaymaz */
+  .t3 th:nth-child(1){width:44%;} .t3 th:nth-child(2){width:28%;} .t3 th:nth-child(3){width:28%;}
+  .t2 th:nth-child(1){width:58%;} .t2 th:nth-child(2){width:42%;}
+  /* Kontrol/Durum hucrelerinde kelime BOLUNMEZ (Otomati-k sorunu) */
+  .t3 td:nth-child(2),.t3 td:nth-child(3),.t2 td:nth-child(2){white-space:nowrap;}
+  /* Dar ekran (telefon): kucuk yazi + kontrol/durum sutunlarina genis pay */
+  @media (max-width:900px){
+    td,th{font-size:13px;padding:6px 3px;}
+    .t3 th:nth-child(1){width:36%;} .t3 th:nth-child(2){width:32%;} .t3 th:nth-child(3){width:32%;}
+  }
+  th{text-align:left;color:#aaa;}
+  /* 2 sutunlu panel renkleri (ESP'den gelen r kodu: y/k/g) */
+  .y{color:#2ecc71;font-weight:bold;}
+  .k{color:#e74c3c;font-weight:bold;}
+  .g{color:#888;font-weight:bold;}
+  .vy{color:#888;font-weight:bold;white-space:normal;font-style:italic;}
+  /* 3 sutunlu panel kontrol/durum renkleri */
+  .otomatik{color:#2ecc71;font-weight:bold;}
+  .manuel{color:#f39c12;font-weight:bold;}
+  .kapali{color:#e74c3c;font-weight:bold;}
+  .hatali{color:#e74c3c;font-weight:bold;text-decoration:underline;}
+  .calisiyor{color:#2ecc71;font-weight:bold;}
+  .calismiyor{color:#888;font-weight:bold;}
+  .saat{display:block;font-size:11px;color:#666;font-weight:normal;margin-top:3px;}
+  .rozet{font-size:13px;padding:4px 12px;border-radius:14px;display:inline-block;margin:6px auto;}
+  .cevrimici{background:#1e3d2f;color:#2ecc71;}
+  .cevrimdisi{background:#3d1e1e;color:#e74c3c;}
+  .resetleniyor{background:#3d2f1e;color:#f39c12;}
+  .ortak{text-align:center;}
+  .baslik{font-size:17px;font-weight:bold;text-align:center;margin-bottom:4px;}
+  .son-gorulme{font-size:11px;color:#888;text-align:center;margin-bottom:10px;}
+  /* v6.0: Ac/Kapat dugmeleri (ESP1/ESP3, 3 sutunlu paneller icin) */
+  .cikis-dugmeler{display:flex;gap:4px;margin-top:4px;}
+  .dugme{border:none;border-radius:5px;padding:3px 8px;font-size:11px;font-weight:bold;cursor:pointer;color:#fff;}
+  .dugme-ac{background:#2ecc71;}
+  .dugme-kapat{background:#e74c3c;}
+  .dugme.pasif{opacity:0.25;cursor:default;pointer-events:none;background:#444;color:#888;}
+  .resetBtn{background:#333;color:#f39c12;border:1px solid #555;border-radius:8px;
+    padding:3px 10px;font-size:12px;cursor:pointer;margin-left:8px;vertical-align:middle;}
+  .resetBtn:hover{background:#444;}
+</style>
+</head>
+<body>
+
+<h2>Sulama Panoları - Uzaktan Durum İzleme <span style="font-size:13px;color:#888;font-weight:normal;">v7.4</span></h2>
+
+<div class="izgara">
+
+  <div class="panel">
+    <div class="baslik">Ev Bahçeleri Sulama</div>
+    <div class="ortak"><span id="rozet1" class="rozet cevrimdisi">SİSTEM DEVREDE DEĞİL</span><button class="resetBtn" onclick="resetGonder(1)">↻ Yeniden Başlat</button></div>
+    <div class="son-gorulme" id="sonGorulme1">Henüz veri alınmadı</div>
+    <table id="tablo1" class="t3"><tr><th>Giriş</th><th>Kontrol</th><th>Durum</th></tr></table>
+  </div>
+
+  <div class="panel">
+    <div class="baslik">Ev Bahçeleri Sistem Durumu</div>
+    <div class="ortak"><span id="rozet2" class="rozet cevrimdisi">SİSTEM DEVREDE DEĞİL</span><button class="resetBtn" onclick="resetGonder(2)">↻ Yeniden Başlat</button></div>
+    <div class="son-gorulme" id="sonGorulme2">Henüz veri alınmadı</div>
+    <table id="tablo2" class="t2"><tr><th>Giriş</th><th>Durum</th></tr></table>
+  </div>
+
+  <div class="panel">
+    <div class="baslik">Uzak Bahçe Sulama</div>
+    <div class="ortak"><span id="rozet3" class="rozet cevrimdisi">SİSTEM DEVREDE DEĞİL</span><button class="resetBtn" onclick="resetGonder(3)">↻ Yeniden Başlat</button></div>
+    <div class="son-gorulme" id="sonGorulme3">Henüz veri alınmadı</div>
+    <table id="tablo3" class="t3"><tr><th>Giriş</th><th>Kontrol</th><th>Durum</th></tr></table>
+  </div>
+
+  <div class="panel">
+    <div class="baslik">Uzak Bahçe Sistem Durumu</div>
+    <div class="ortak"><span id="rozet4" class="rozet cevrimdisi">SİSTEM DEVREDE DEĞİL</span><button class="resetBtn" onclick="resetGonder(4)">↻ Yeniden Başlat</button></div>
+    <div class="son-gorulme" id="sonGorulme4">Henüz veri alınmadı</div>
+    <table id="tablo4" class="t2"><tr><th>Giriş</th><th>Durum</th></tr></table>
+  </div>
+
+</div>
+
+<script>
+// --- AYARLAR ---
+// .ino dosyalarindaki topic isimleriyle AYNI olmali.
+// tip: 3 = 3 sutunlu (Giris|Kontrol|Durum), 2 = 2 sutunlu (Giris|Durum)
+var PANELLER = [
+  { no: 1, tip: 3, kok: "ozel_kod_xyz/sulama_panosu_1" },
+  { no: 2, tip: 2, kok: "ozel_kod_xyz/sulama_panosu_2" },
+  { no: 3, tip: 3, kok: "ozel_kod_xyz/sulama_panosu_3" },
+  { no: 4, tip: 2, kok: "ozel_kod_xyz/sulama_panosu_4" }
+];
+
+var HIVEMQ_HOST = "d4f2f191ac81434da21555989993b383.s1.eu.hivemq.cloud";
+var HIVEMQ_PORT = 8884; // HiveMQ Cloud WebSocket TLS portu
+var HIVEMQ_USER = "tohasan";
+var HIVEMQ_PASS = "H13542305s*";
+
+var ZAMAN_ASIMI_MS = 90000;
+
+// Panel basina son durum / saat / heartbeat bilgisi
+var SON_DURUM = {};      // SON_DURUM[1] = {...}
+var SAAT_BILGISI = {};   // SAAT_BILGISI[1] = {...}
+var sonHeartbeat = {};   // sonHeartbeat[1] = zaman
+var cevrimiciMi = {};    // cevrimiciMi[1] = true/false (tablo cizimi icin)
+var resetleniyor = {};   // resetleniyor[1] = true ise "YENIDEN BASLATILIYOR" goster
+var resetZamani = {};    // reset mesajinin geldigi an (2 dk sonra vazgec)
+PANELLER.forEach(function(p){ SAAT_BILGISI[p.no] = {}; SON_DURUM[p.no] = null; sonHeartbeat[p.no] = 0; cevrimiciMi[p.no] = false; resetleniyor[p.no] = false; resetZamani[p.no] = 0; });
+
+var client = new Paho.MQTT.Client(HIVEMQ_HOST, HIVEMQ_PORT, "web_" + Math.random().toString(16).substr(2,8));
+
+client.onConnectionLost = function() {
+  PANELLER.forEach(function(p){
+    var rozet = document.getElementById("rozet" + p.no);
+    rozet.innerText = "BAĞLANTI KESİLDİ (sayfa)";
+    rozet.className = "rozet cevrimdisi";
+  });
+  setTimeout(baglan, 3000);
+};
+
+client.onMessageArrived = function(message) {
+  var topic = message.destinationName;
+
+  PANELLER.forEach(function(p){
+    if (topic === p.kok + "/durum") {
+      SON_DURUM[p.no] = JSON.parse(message.payloadString);
+      tabloCiz(p);
+    } else if (topic === p.kok + "/baglanti") {
+      if (message.payloadString === "CEVRIMICI") {
+        sonHeartbeat[p.no] = Date.now();
+        resetleniyor[p.no] = false; // geri geldi, reset gostergesini kaldir
+      } else if (message.payloadString === "YENIDEN_BASLATILIYOR") {
+        sonHeartbeat[p.no] = 0;
+        resetleniyor[p.no] = true;
+        resetZamani[p.no] = Date.now();
+      } else {
+        sonHeartbeat[p.no] = 0; // CEVRIMDISI vb.
+      }
+      guncelleRozet(p.no);
+    } else if (topic === p.kok + "/saatler") {
+      SAAT_BILGISI[p.no] = JSON.parse(message.payloadString);
+      if (SON_DURUM[p.no]) tabloCiz(p);
+    }
+  });
+};
+
+function tabloCiz(p) {
+  if (p.tip === 3) doldurTablo3(p.no);
+  else doldurTablo2(p.no);
+}
+
+// 3 SUTUN: Giris | Kontrol | Durum
+// Veri bicimi: {"Grup Adi":{"k":"O","d":1}, ...}
+var KONTROL_HARITA = {
+  "O": { yazi: "Otomatik",  sinif: "otomatik" },
+  "M": { yazi: "Manuel",    sinif: "manuel" },
+  "K": { yazi: "Kapalı",    sinif: "kapali" },
+  "H": { yazi: "HATALI!",   sinif: "hatali" }
+};
+
+function doldurTablo3(no) {
+  var tablo = document.getElementById("tablo" + no);
+  var data = SON_DURUM[no];
+  var saatBilgisi = SAAT_BILGISI[no];
+  tablo.innerHTML = "<tr><th>Giriş</th><th>Kontrol</th><th>Durum</th></tr>";
+  for (var key in data) {
+    var saatSatiri = saatBilgisi[key] ? "<span class='saat'>" + saatBilgisi[key] + "</span>" : "";
+    if (!cevrimiciMi[no]) {
+      // v7.2: "Uzak Bahçe Kontrol" satirinda cevrimdisiyken HICBIR YAZI
+      // gorunmesin (ne Veri Alinamadi ne baska bir sey) - digerlerinde
+      // normal "Veri Alinamadi" davranisi devam eder.
+      if (key === "Uzak Bahçe Kontrol") {
+        tablo.innerHTML += "<tr><td>" + key + saatSatiri + "</td><td></td><td></td></tr>";
+      } else {
+        tablo.innerHTML += "<tr><td>" + key + saatSatiri + "</td>" +
+          "<td class='vy'>Veri Alınamadı</td><td class='vy'>Veri Alınamadı</td></tr>";
+      }
+      continue;
+    }
+    var ozelSatir = (data[key].k === ""); // v7.2: "Uzak Bahce Kontrol" - Kontrol sutunu hep bos
+    var k = ozelSatir ? null : (KONTROL_HARITA[data[key].k] || KONTROL_HARITA["H"]);
+    var calisiyor = data[key].d === 1;
+    var cikisAcik = data[key].c === 1;
+    var grupIndex = data[key].i;
+
+    var durumIcerik;
+    if (ozelSatir) {
+      // v7.3: "Uzak Bahce Kontrol" - Acik/Kapali + P6 onayi beklenirken
+      // (biz actik ama henuz onaylanmadi) "Bekleniyor..." gosterilir.
+      if (calisiyor) {
+        durumIcerik = "<span class='calisiyor'>Açık</span>";
+      } else if (cikisAcik) {
+        durumIcerik = "<span class='saat' style='color:#f39c12;'>Bekleniyor...</span>";
+      } else {
+        durumIcerik = "<span class='kapali'>Kapalı</span>";
+      }
+    } else {
+      durumIcerik = calisiyor ? "<span class='calisiyor'>Çalışıyor</span>" : "";
+      if (!calisiyor && cikisAcik) {
+        // Web'den AC komutu gonderildi ama sensor henuz onaylamadi (bekleme/
+        // olasi ariza penceresi - en fazla 45 sn surer, sonra ESP otomatik kapatir)
+        durumIcerik = "<span class='saat' style='color:#f39c12;'>Bekleniyor...</span>";
+      }
+    }
+    var dugmeler = "";
+    // v6.3 GUVENLIK/GORUNURLUK KURALI - 4 durum:
+    // 1) Calismiyor, cikis kapali: normal bosta -> Ac parlak, Kapat soluk.
+    // 2) Calismiyor, cikis acik (bekleme/olasi ariza): Ac soluk, Kapat
+    //    PARLAK -> kullanici 45 sn beklemeden ELLE iptal edebilir.
+    // 3) Calisiyor, cikis acik (bizim actigimiz calisiyor): Ac soluk,
+    //    Kapat parlak -> kapatabiliriz.
+    // 4) Calisiyor, cikis kapali (normal otomasyon calistiriyor): dugmeler
+    //    HIC GORUNMEZ, mudahale etmeyiz.
+    if (grupIndex !== undefined && ozelSatir) {
+      // v7.4 DUZELTME: Onceki "sadece d'ye bak" kurali, P6 geri bildirim
+      // vermediginde (d hep 0 kalirsa) Kapat'a HIC basilamamasina yol
+      // aciyordu (rolemiz acik kalsa da ekran hep "bosta" gorunuyordu).
+      // Artik "c" (bizim rolemiz) de hesaba katiliyor - diger 7 grubun
+      // mantigina benzer sekilde:
+      if (calisiyor) {
+        // v7.4 DUZELTME: Onceden buraya gelince dugmeler TAMAMEN
+        // gizleniyordu - kullanici kendi actigi seyi kapatamiyordu.
+        // Artik Kapat AKTIF kalir (Ac soluk), her zaman kapatilabilir.
+        dugmeler = "<div class='cikis-dugmeler'>" +
+          "<button class='dugme dugme-ac pasif'>Aç</button>" +
+          "<button class='dugme dugme-kapat' " +
+          "onclick=\"cikisGonder(" + no + "," + grupIndex + ",false)\">Kapat</button>" +
+          "</div>";
+      } else if (cikisAcik) {
+        // Biz actik (c=1) ama P6 henuz/hic onaylamadi (d=0) -> Kapat
+        // AKTIF olsun, boylece 60sn zaman asimini beklemeden elle
+        // iptal edilebilir.
+        dugmeler = "<div class='cikis-dugmeler'>" +
+          "<button class='dugme dugme-ac pasif'>Aç</button>" +
+          "<button class='dugme dugme-kapat' " +
+          "onclick=\"cikisGonder(" + no + "," + grupIndex + ",false)\">Kapat</button>" +
+          "</div>";
+      } else {
+        // Bosta - normal durum, Ac aktif
+        dugmeler = "<div class='cikis-dugmeler'>" +
+          "<button class='dugme dugme-ac' " +
+          "onclick=\"cikisGonder(" + no + "," + grupIndex + ",true)\">Aç</button>" +
+          "<button class='dugme dugme-kapat pasif'>Kapat</button>" +
+          "</div>";
+      }
+    } else if (grupIndex !== undefined) {
+      if (!calisiyor && !cikisAcik) {
+        dugmeler = "<div class='cikis-dugmeler'>" +
+          "<button class='dugme dugme-ac' " +
+          "onclick=\"cikisGonder(" + no + "," + grupIndex + ",true)\">Aç</button>" +
+          "<button class='dugme dugme-kapat pasif'>Kapat</button>" +
+          "</div>";
+      } else if (calisiyor && !cikisAcik) {
+        // dugme yok - normal otomasyon calistiriyor
+      } else {
+        // (!calisiyor && cikisAcik) veya (calisiyor && cikisAcik)
+        dugmeler = "<div class='cikis-dugmeler'>" +
+          "<button class='dugme dugme-ac pasif'>Aç</button>" +
+          "<button class='dugme dugme-kapat' " +
+          "onclick=\"cikisGonder(" + no + "," + grupIndex + ",false)\">Kapat</button>" +
+          "</div>";
+      }
+    }
+
+    var kontrolHucre = ozelSatir ? "<td></td>" : ("<td class='" + k.sinif + "'>" + k.yazi + "</td>");
+    tablo.innerHTML += "<tr><td>" + key + saatSatiri + "</td>" +
+      kontrolHucre +
+      "<td>" + durumIcerik + dugmeler + "</td></tr>";
+  }
+}
+
+// v6.0: Ac/Kapat dugmesine basinca ESP'ye komut yollar (sifre sormaz,
+// hizli operasyonel islem). ESP komutu isleyip anlik durumu geri
+// yayinlar, tablo bir sonraki mesajda otomatik guncellenir.
+function cikisGonder(no, grupIndex, ac) {
+  var p = null;
+  for (var i = 0; i < PANELLER.length; i++) {
+    if (PANELLER[i].no === no) p = PANELLER[i];
+  }
+  if (!p) return;
+  try {
+    var mesaj = "CIKIS:" + grupIndex + ":" + (ac ? "AC" : "KAPAT");
+    var m = new Paho.MQTT.Message(mesaj);
+    m.destinationName = p.kok + "/komut";
+    client.send(m);
+  } catch (e) {
+    alert("Gönderilemedi - sayfanın bağlantısı kopuk olabilir. Sayfayı yenileyin.");
+  }
+}
+
+// 2 SUTUN: Giris | Durum
+// Veri bicimi: {"Giris Adi":{"t":"Açık","r":"y"}, ...} (r: y/k/g renk)
+function doldurTablo2(no) {
+  var tablo = document.getElementById("tablo" + no);
+  var data = SON_DURUM[no];
+  var saatBilgisi = SAAT_BILGISI[no];
+  tablo.innerHTML = "<tr><th>Giriş</th><th>Durum</th></tr>";
+  for (var key in data) {
+    var saatSatiri = saatBilgisi[key] ? "<span class='saat'>" + saatBilgisi[key] + "</span>" : "";
+    if (!cevrimiciMi[no]) {
+      // Sistem devrede degil: eski veri yaniltmasin
+      tablo.innerHTML += "<tr><td>" + key + saatSatiri + "</td>" +
+        "<td class='vy'>Veri Alınamadı</td></tr>";
+      continue;
+    }
+    var yazi = data[key].t;
+    var renk = data[key].r || "g";
+    tablo.innerHTML += "<tr><td>" + key + saatSatiri + "</td>" +
+      "<td class='" + renk + "'>" + yazi + "</td></tr>";
+  }
+}
+
+function guncelleRozet(no) {
+  var hb = sonHeartbeat[no];
+  var rozet = document.getElementById("rozet" + no);
+  var sonGorulme = document.getElementById("sonGorulme" + no);
+  var simdi = Date.now();
+  var aktif = (hb > 0 && (simdi - hb) < ZAMAN_ASIMI_MS);
+
+  // Cevrimici durumu degistiyse tabloyu yeniden ciz
+  // (cevrimdisi olunca "Veri Alinamadi", geri gelince gercek veriler)
+  if (cevrimiciMi[no] !== aktif) {
+    cevrimiciMi[no] = aktif;
+    for (var i = 0; i < PANELLER.length; i++) {
+      if (PANELLER[i].no === no && SON_DURUM[no]) tabloCiz(PANELLER[i]);
+    }
+  }
+
+  if (aktif) {
+    rozet.innerText = "ÇEVRİMİÇİ";
+    rozet.className = "rozet cevrimici";
+    sonGorulme.innerText = "Son sinyal: " + Math.round((simdi - hb) / 1000) + " saniye önce";
+  } else if (resetleniyor[no] && (simdi - resetZamani[no]) < 120000) {
+    // Reset komutu uygulandi, panonun geri gelmesi bekleniyor
+    rozet.innerText = "YENİDEN BAŞLATILIYOR...";
+    rozet.className = "rozet resetleniyor";
+    sonGorulme.innerText = "Reset komutu uygulandı (" +
+      Math.round((simdi - resetZamani[no]) / 1000) + " sn), ilk kalp atışı bekleniyor";
+  } else {
+    rozet.innerText = "SİSTEM DEVREDE DEĞİL";
+    rozet.className = "rozet cevrimdisi";
+    sonGorulme.innerText = hb > 0
+      ? "Son sinyal: " + Math.round((simdi - hb) / 60000) + " dakika önce"
+      : "Henüz hiç sinyal alınmadı";
+  }
+}
+
+setInterval(function() {
+  PANELLER.forEach(function(p){ guncelleRozet(p.no); });
+}, 1000);
+
+// "Yeniden Baslat" dugmesi: sifre sorar, ESP'ye komut yollar.
+// Sifre BU DOSYADA SAKLANMAZ - dogrulamayi ESP yapar (komut_sifresi).
+function resetGonder(no) {
+  var sifre = prompt("Pano " + no + " YENİDEN BAŞLATILACAK.\nKomut şifresini girin:");
+  if (sifre === null || sifre === "") return;
+  var p = null;
+  for (var i = 0; i < PANELLER.length; i++) {
+    if (PANELLER[i].no === no) p = PANELLER[i];
+  }
+  try {
+    var m = new Paho.MQTT.Message("RESET:" + sifre);
+    m.destinationName = p.kok + "/komut";
+    client.send(m);
+    alert("Komut gönderildi. Şifre doğruysa rozet önce 'YENİDEN BAŞLATILIYOR' olur, " +
+          "pano geri gelince 'ÇEVRİMİÇİ'ye döner.");
+  } catch (e) {
+    alert("Gönderilemedi - sayfanın MQTT bağlantısı kopuk olabilir. Sayfayı yenileyin.");
+  }
+}
+
+function baglan() {
+  client.connect({
+    useSSL: true,
+    userName: HIVEMQ_USER,
+    password: HIVEMQ_PASS,
+    onSuccess: function() {
+      PANELLER.forEach(function(p){
+        client.subscribe(p.kok + "/durum");
+        client.subscribe(p.kok + "/baglanti");
+        client.subscribe(p.kok + "/saatler");
+      });
+    },
+    onFailure: function() {
+      setTimeout(baglan, 3000);
+    }
+  });
+}
+
+baglan();
+</script>
+
+</body>
+</html>
